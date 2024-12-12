@@ -1,0 +1,46 @@
+
+services:
+  influxdb:
+    image: influxdb:2
+    ports:
+      - 8086:8086
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=password
+      - DOCKER_INFLUXDB_INIT_ORG=infm
+      - DOCKER_INFLUXDB_INIT_BUCKET=timeseries
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=admintoken
+    volumes:
+      - "./influxdb2_data/config:/etc/influxdb2"
+      - "./influxdb2_data/data:/var/lib/influxdb2"
+
+  hivemq:
+    image: hivemq/hivemq-ce
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./hivemq-config.xml:/opt/hivemq/conf/config.xml
+
+  telegraf:
+    image: telegraf:latest
+    depends_on:
+      - influxdb
+    environment:
+      - INFLUX_TOKEN=admintoken
+    volumes:
+      - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - influxdb
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+
+volumes:
+  influxdb_data: {}  # Definieer hier het volume voor InfluxDB
+  grafana-storage: {}
