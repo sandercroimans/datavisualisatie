@@ -1,0 +1,161 @@
+import paho.mqtt.client as mqtt
+import time
+import RPi.GPIO as GPIO
+import time
+import json
+import threading
+from queue import Queue
+from threading import Lock
+
+pakjes_queue = Queue()
+omwikkelingen_queue = Queue()
+pakjes_lock = Lock()
+omwikkelingen_lock = Lock()
+
+TRIG_PIN = 24
+ECHO_PIN = 23
+INFRAROOD_PIN = 17
+REED_PIN = 18
+RELAIS_PIN = 27
+
+afstand = 0
+aantal_pakjes = 0
+aantal_omwikkelingen = 0
+motor_aan = False
+state_relais = 0
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(TRIG_PIN, GPIO.OUT)
+GPIO.setup(ECHO_PIN, GPIO.IN)
+GPIO.setup(INFRAROOD_PIN, GPIO.IN)
+GPIO.setup(RELAIS_PIN, GPIO.OUT)
+GPIO.setup(REED_PIN, GPIO.IN)
+# MQTT-broker instellingen
+broker_address = "26bd0d88101e4b46b4bb6f7d33ce6cf1.s1.eu.hivemq.cloud"
+port = 8883
+
+# Maak MQTT-client
+client = mqtt.Client("mqtt")
+client.username_pw_set("Sander", "ScHc?!2004")
+client.tls_set()
+client.connect(broker_address, port)
+
+# Callback functie voor publicatie
+client.loop_start()
+
+def meet_afstand():
+    GPIO.output(TRIG_PIN, GPIO.HIGH)
+    time.sleep(0.00001)
+    GPIO.output(TRIG_PIN, GPIO.LOW)
+
+    start_tijd = time.time()
+    stop_tijd = time.time()
+
+    while GPIO.input(ECHO_PIN) == 0:
+        start_tijd = time.time()
+
+    while GPIO.input(ECHO_PIN) == 1:
+        stop_tijd = time.time()
+
+    tijdsverschil = stop_tijd - start_tijd
+    afstand = (tijdsverschil * 34300) / 2
+    #print(f"Afstand: {afstand} cm")
+    return round(afstand, 2)
+
+def besturing_motor():
+    global motor_aan
+    if afstand < 50 and not motor_aan:
+        GPIO.output(RELAIS_PIN, GPIO.HIGH)
+        motor_aan = True
+    elif afstand >= 50 and motor_aan:
+        GPIO.output(RELAIS_PIN, GPIO.LOW)
+        motor_aan = False
+
+
+# Initialize the global variable
+state_relais = 0
+
+
+   
+def update_relais(motor_aan):
+    global state_relais  # Declare that we want to use the global variable
+    if motor_aan:  # This is equivalent to if motor_aan == True
+        state_relais = 1  # Set to 1 if motor_aan is True
+    else:
+        state_relais = 0  # Set to 0 if motor_aan is False
+        
+omwikkelingen_state = False
+
+def tel_omwikkelingen_thread():
+    global omwikkelingen_state 
+    global aantal_omwikkelingen
+    while True:
+        if GPIO.input(REED_PIN) == GPIO.HIGH and omwikkelingen_state == False:
+            with omwikkelingen_lock:
+                aantal_omwikkelingen += 1
+                omwikkelingen_state = True
+            omwikkelingen_queue.put(aantal_omwikkelingen)
+    
+        if GPIO.input(REED_PIN) == GPIO.LOW:
+            omwikkelingen_state = False
+pakjes_status = False
+def tel_pakjes_thread():
+    global aantal_pakjes
+    while True:
+        if GPIO.input(INFRAROOD_PIN) == GPIO.LOW and pakjes_status == False:
+            with pakjes_lock:
+                aantal_pakjes += 1
+                pakjes_status = True 
+            pakjes_queue.put(aantal_pakjes)
+            time.sleep(1)
+        if GPIO.input(INFRAROOD_PIN) == GPIO.HIGH:
+            pakjes_status = False
+# Start de threads
+omwikkelingen_thread = threading.Thread(target=tel_omwikkelingen_thread, daemon=True)
+pakjes_thread = threading.Thread(target=tel_pakjes_thread, daemon=True)
+omwikkelingen_thread.start()
+pakjes_thread.start()
+    
+try:
+    while True:
+        
+        update_relais(motor_aan)   
+        afstand = meet_afstand()
+        besturing_motor()
+        
+        # Update aantal_omwikkelingen en aantal_pakjes vanuit de queues
+        while not omwikkelingen_queue.empty():
+            with omwikkelingen_lock:
+                aantal_omwikkelingen = omwikkelingen_queue.get()
+        
+        while not pakjes_queue.empty():
+            with pakjes_lock:
+                aantal_pakjes = pakjes_queue.get()
+        
+                
+              
+        data_afstand = {
+                    'waarde': afstand, 'eenheid' : 'cm' 
+                }
+        data_pakjes = {
+                    "waarde": aantal_pakjes, "eenheid" : "aantal"
+                    }
+        data_omwikkelingen = {
+                    "waarde":aantal_omwikkelingen, "eenheid" : "rotaties"
+                    }
+        data_actuator = {
+                    "state": state_relais, "eenheid" : "logische waarde"}
+        message_afstand = json.dumps(data_afstand)
+        message_pakjes = json.dumps(data_pakjes)
+        message_omwikkelingen = json.dumps(data_omwikkelingen)
+        message_actuator = json.dumps(data_actuator)
+        client.publish("device/sensor/afstand", message_afstand, qos=0)  # QoS instellen
+        client.publish("device/sensor/pakjes", message_pakjes, qos=0)  # QoS instellen
+        client.publish("device/sensor/omwikkelingen", message_omwikkelingen, qos=0)  # QoS instellen
+                
+        client.publish("device/sensor/state", message_actuator, qos=0)
+        time.sleep(0.5)
+        
+finally:
+    client.loop_stop()
+    GPIO.cleanup()
+    
